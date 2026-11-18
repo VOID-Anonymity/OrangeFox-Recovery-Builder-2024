@@ -109,14 +109,67 @@ jobs:
     - name: Fast Config Check (Fail-Fast)
       run: |
         cd ${GITHUB_WORKSPACE}/OrangeFox/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
-        source build/envsetup.sh
+        TREE_DIR="${{ github.event.inputs.DEVICE_PATH }}"
+
+        echo "=========================================="
+        echo "🔍 ЗАПУСК ПОЛНОЙ ДИАГНОСТИКИ ДЕРЕВА..."
+        echo "=========================================="
+
+        # 1. Проверка базовых файлов дерева
+        for FILE in BoardConfig.mk AndroidProducts.mk device.mk recovery.fstab; do
+          if [ ! -f "${TREE_DIR}/${FILE}" ]; then
+            echo "❌ ТУТ БАГ! Не найден обязательный файл: ${TREE_DIR}/${FILE}"
+            exit 1
+          fi
+        done
+        echo "Проверка структуры файлов дерева... ✅"
+
+        # 2. Проверка ядра (kernel)
+        if [ ! -f "${TREE_DIR}/prebuilt/kernel" ] && [ ! -f "${TREE_DIR}/kernel" ]; then
+          echo "❌ ТУТ БАГ! Не найден бинарник ядра (prebuilt/kernel или kernel)!"
+          exit 1
+        fi
+        echo "Проверка наличия ядра (kernel)... ✅"
+
+        # 3. Проверка отсутствия конфликта vendor / system-as-root
+        if [ -d "${TREE_DIR}/recovery/root/vendor" ] || grep -q "BOARD_BUILD_SYSTEM_ROOT_IMAGE" "${TREE_DIR}/BoardConfig.mk"; then
+          echo "❌ ТУТ БАГ! Обнаружен конфликт root/vendor или BOARD_BUILD_SYSTEM_ROOT_IMAGE!"
+          exit 1
+        fi
+        echo "Проверка чистоты рамдиска (без конфликта vendor)... ✅"
+
+        # 4. Проверка совместимости и lunch через AOSP
+        set +e
+        source build/envsetup.sh > /dev/null 2>&1
         export ALLOW_MISSING_DEPENDENCIES=true
         if [ "${{ github.event.inputs.MANIFEST_BRANCH }}" = "11.0" ] || [ "${{ github.event.inputs.MANIFEST_BRANCH }}" = "12.1" ]; then
           lunch twrp_${{ github.event.inputs.DEVICE_NAME }}-eng
         else
           lunch omni_${{ github.event.inputs.DEVICE_NAME }}-eng
         fi
-        get_build_var TARGET_RECOVERY_PIXEL_FORMAT
+        RES=$?
+        set -e
+
+        if [ $RES -ne 0 ]; then
+          echo "❌ ТУТ БАГ! Система сборки не приняла lunch для ${{ github.event.inputs.DEVICE_NAME }}!"
+          exit 1
+        fi
+        echo "Проверка совместимости (lunch)... ✅"
+
+        # 5. Проверка переменных экрана и раздела
+        set +e
+        PIXEL_FMT=$(get_build_var TARGET_RECOVERY_PIXEL_FORMAT 2>/dev/null)
+        PART_SIZE=$(get_build_var BOARD_RECOVERYIMAGE_PARTITION_SIZE 2>/dev/null)
+        set -e
+
+        if [ -z "${PART_SIZE}" ]; then
+          echo "❌ ТУТ БАГ! Не задан размер раздела BOARD_RECOVERYIMAGE_PARTITION_SIZE!"
+          exit 1
+        fi
+        echo "Проверка поддержки и конфигов (Формат: ${PIXEL_FMT:-AUTO}, Раздел: ${PART_SIZE} байт)... ✅"
+        echo "=========================================="
+        echo "🚀 ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ! СТАРТУЕМ СБОРКУ!"
+        echo "=========================================="
 
     - name: Check Manifest Branch
       uses: haya14busa/action-cond@v1
@@ -153,7 +206,7 @@ jobs:
             echo "FILE_PATH=${GITHUB_WORKSPACE}/OrangeFox/fox_${{ github.event.inputs.MANIFEST_BRANCH }}/${OUT_DIR}" >> $GITHUB_ENV
             echo "MD5_IMG=$(md5sum ${OUT_DIR}/OrangeFox*.img | cut -d ' ' -f 1)" >> $GITHUB_ENV
         else
-            echo "ERROR: Recovery image was not built!"
+            echo "❌ ТУТ БАГ! Финальный образ OrangeFox*.img не создался!"
             exit 1
         fi
 
