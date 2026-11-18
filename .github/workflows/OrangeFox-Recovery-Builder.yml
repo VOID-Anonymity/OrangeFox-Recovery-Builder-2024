@@ -99,12 +99,16 @@ jobs:
         cd ${{ github.event.inputs.DEVICE_PATH }}
         echo "COMMIT_ID=$(git rev-parse HEAD)" >> $GITHUB_ENV
 
-        # Авто-чистка конфликтов для старых MT6739 деревьев
+        # Авто-чистка конфликтов в дереве устройства
         rm -rf recovery/root/vendor
         sed -i '/BOARD_BUILD_SYSTEM_ROOT_IMAGE/d' BoardConfig.mk
         if ! grep -q "FOX_BEFORE_RECOVERY_IMAGE_HOOK" BoardConfig.mk; then
           echo 'FOX_BEFORE_RECOVERY_IMAGE_HOOK := rm -rf $(TARGET_RECOVERY_ROOT_OUT)/vendor' >> BoardConfig.mk
         fi
+
+        # Патчим rsync в исходниках OrangeFox, чтобы --force сносил непустые папки при замене на симлинк
+        cd ${GITHUB_WORKSPACE}/OrangeFox/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
+        grep -rn "rsync " vendor/recovery/ bootable/recovery/ 2>/dev/null | cut -d: -f1 | sort -u | xargs -r sed -i 's/rsync -a/rsync -a --force/g'
 
     - name: Fast Config Check (Fail-Fast)
       run: |
@@ -131,12 +135,16 @@ jobs:
         fi
         echo "Проверка наличия ядра (kernel)... ✅"
 
-        # 3. Проверка отсутствия конфликта vendor / system-as-root
+        # 3. Проверка отсутствия конфликта vendor и применения патча rsync --force
         if [ -d "${TREE_DIR}/recovery/root/vendor" ] || grep -q "BOARD_BUILD_SYSTEM_ROOT_IMAGE" "${TREE_DIR}/BoardConfig.mk"; then
           echo "❌ ТУТ БАГ! Обнаружен конфликт root/vendor или BOARD_BUILD_SYSTEM_ROOT_IMAGE!"
           exit 1
         fi
-        echo "Проверка чистоты рамдиска (без конфликта vendor)... ✅"
+        if ! grep -rq -- "--force" vendor/recovery/ bootable/recovery/ 2>/dev/null; then
+          echo "❌ ТУТ БАГ! Патч rsync --force не применился в vendor/recovery или bootable/recovery!"
+          exit 1
+        fi
+        echo "Проверка чистоты рамдиска и патча rsync --force... ✅"
 
         # 4. Проверка совместимости и lunch через AOSP
         set +e
